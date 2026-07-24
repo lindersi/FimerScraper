@@ -1,2 +1,2 @@
-playwright
-paho-mqtt
+playwright==1.61.0
+paho-mqtt==2.1.0

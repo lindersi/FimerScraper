@@ -21,8 +21,8 @@ control = {
 host = socket.gethostname()
 
 
-def on_connect(client, userdata, flags, rc):
-    print(f"MQTT connected with result code {rc}", flush=True)
+def on_connect(client, userdata, flags, reason_code, properties):
+    print(f"MQTT connected with result code {reason_code}", flush=True)
     client.subscribe("fimer/control/#")
 
 
@@ -39,7 +39,7 @@ def on_message(client, userdata, msg):
         control["retries"] = received
 
 
-client = mqtt.Client()
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
 client.username_pw_set(secrets.mqtt_user, password=secrets.mqtt_pwd)
