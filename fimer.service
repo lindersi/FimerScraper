@@ -1,0 +1,21 @@
+[Unit]
+Description=Fimer-Scraper Service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/path/to/FimerScraper
+ExecStart=/home/YOUR_USERNAME/path/to/FimerScraper/venv/bin/python -u app.py
+Restart=always
+RestartSec=10s
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,31 +1,43 @@
-# Kopie vom StScraper - angepasst für Fimer-Abfrage
-# Stand 09.07.2023: Anmelden klappt nicht - Login-Button lässt sich nicht auslösen...
-# Stand 24.05.2024: Versuch, mit ChatGPT alles hinzukriegen... (https://chatgpt.com/share/fe895b83-7695-479d-bcc5-c6d2a114746b)
-#   - erster Test mit Playwright in separatem File playwright-login.py
-#   - Danach hier zusammengebastelt und gleich durch ChatGPT neu schreiben lassen :-)
+"""FimerScraper: scrape Fimer/ABB inverter GUI and publish values via MQTT."""
 
-import datetime
-import sys
-import socket
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import asyncio
+import datetime
+import socket
+import sys
+
 import paho.mqtt.client as mqtt
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
+
 import secrets
 
+control = {
+    "onoff": "",
+    "delay": 30,
+    "waittime": 15,
+    "retries": 3,
+}
 
-# MQTT setup and callbacks
+host = socket.gethostname()
+
+
 def on_connect(client, userdata, flags, rc):
-    print("MQTT connected with result code " + str(rc))
+    print(f"MQTT connected with result code {rc}", flush=True)
     client.subscribe("fimer/control/#")
 
 
 def on_message(client, userdata, msg):
     received = str(msg.payload.decode("utf-8"))
-    print(msg.topic + " " + received)
+    print(f"{msg.topic} {received}", flush=True)
     if msg.topic == "fimer/control/onoff":
-        control['onoff'] = received
-    if msg.topic == "fimer/control/delay":
-        control['delay'] = received
+        control["onoff"] = received
+    elif msg.topic == "fimer/control/delay":
+        control["delay"] = received
+    elif msg.topic == "fimer/control/waittime":
+        control["waittime"] = received
+    elif msg.topic == "fimer/control/retries":
+        control["retries"] = received
+
 
 client = mqtt.Client()
 client.on_connect = on_connect
@@ -34,108 +46,157 @@ client.username_pw_set(secrets.mqtt_user, password=secrets.mqtt_pwd)
 client.connect(secrets.mqtt_host, secrets.mqtt_port, 60)
 client.loop_start()
 
-control = {
-    'onoff': '',
-    'delay': 30,
-    'waittime': 15,
-    'retries': 1
-}
+client.publish(
+    "fimer/status",
+    payload=f'Fimer-Scraper gestartet auf {host}, Abrufintervall (delay): {control["delay"]}s',
+)
 
-host = socket.gethostname()
-client.publish('fimer/status', payload=f'Fimer-Scraper gestartet auf {host}, Abrufintervall (delay): {control["delay"]}s')
 
-# Function to perform login and return the page object
 async def login_and_get_page(browser):
     context = await browser.new_context()
     page = await context.new_page()
     await page.goto(secrets.portal_loginpath)
-
-    # Wait for the login button to be visible and click it
-    await page.wait_for_selector('#login-btn')
-    await page.click('#login-btn')
-
+    await page.wait_for_selector("#login-btn")
+    await page.click("#login-btn")
     return page
 
-# Function to extract data
+
 async def extract_data(page):
-    data = {}
-    data["P1"] = await page.text_content('#mppt__1_power-value')
-    data["P2"] = await page.text_content('#mppt__2_power-value')
-    data["P3"] = await page.text_content('#mppt__3_power-value')
-    data["P4"] = await page.text_content('#mppt__4_power-value')
-    # Derating: State "power_curtailment" or "Kein Derating". Unknown where to get the value from.
-    data["Derating"] = (await page.text_content('#derating_monitor_obj_grid_active_power_derating_src-value') or "").strip()
+    data = {
+        "P1": await page.text_content("#mppt__1_power-value"),
+        "P2": await page.text_content("#mppt__2_power-value"),
+        "P3": await page.text_content("#mppt__3_power-value"),
+        "P4": await page.text_content("#mppt__4_power-value"),
+        # Derating: State "power_curtailment" or "Kein Derating".
+        "Derating": (
+            await page.text_content(
+                "#derating_monitor_obj_grid_active_power_derating_src-value"
+            )
+            or ""
+        ).strip(),
+    }
     return data
 
-# Main function to control the scraping and MQTT publishing
-async def main():
-    abrufversuche = 0
 
-    while abrufversuche < int(control['retries']):
-        if abrufversuche > 0:
-            wartezeit = 0.2 if abrufversuche == 1 else (3 if abrufversuche < 4 else int(control['waittime']))
-            client.publish('fimer/status', payload=f'Abrufversuch {abrufversuche}: Warte {wartezeit} min ...')
-            await asyncio.sleep(wartezeit * 60)
+def publish_data(data, loop_count):
+    now = datetime.datetime.now()
+    data["Timestamp"] = now
+    data["Date"] = now.strftime("%d.%m.%Y")
+    data["Time"] = now.strftime("%H:%M:%S")
+    for key, value in data.items():
+        client.publish("fimer/" + key, payload=str(value).replace(",", "."))
+        print(f"{key:16}{value}", flush=True)
+    client.publish(
+        "fimer/status",
+        payload=f'Loop {loop_count}, {len(data)} items sent from {host}, delay={control["delay"]}s',
+    )
+    print(f'Loop {loop_count} OK, {len(data)} items, delay={control["delay"]}s', flush=True)
 
-        abrufversuche += 1
 
-        async with async_playwright() as p:
-            client.publish('fimer/status', payload=f'Anmeldung starten.')
-            browser = await p.chromium.launch(headless=True)
+async def scrape_session():
+    """Run one browser session until stop/restart or too many consecutive failures."""
+    consecutive_failures = 0
+    max_failures = max(1, int(control["retries"]))
 
-            try:
-                page = await login_and_get_page(browser)
-                client.publish('fimer/status', payload=f'Anmeldung erfolgreich.')
-                x = 0
+    async with async_playwright() as p:
+        client.publish("fimer/status", payload="Anmeldung starten.")
+        browser = await p.chromium.launch(headless=True)
+        try:
+            page = await login_and_get_page(browser)
+            client.publish("fimer/status", payload="Anmeldung erfolgreich.")
+            loop_count = 0
 
-                while control['onoff'] != "stop":
-                    if control['onoff'] == "restart":
-                        control['onoff'] = ""
-                        raise InterruptedError('Neustart angefordert...')
+            while control["onoff"] != "stop":
+                if control["onoff"] == "restart":
+                    control["onoff"] = ""
+                    client.publish("fimer/status", payload="Neustart angefordert...")
+                    return "restart"
 
-                    if x > 0:
-                        await asyncio.sleep(int(control['delay']))
-                    else:
-                        client.publish('fimer/status', payload='Abfrage gestartet')
-                    x += 1
+                if loop_count > 0:
+                    await asyncio.sleep(int(control["delay"]))
+                else:
+                    client.publish("fimer/status", payload="Abfrage gestartet")
 
-                    data = await extract_data(page)
-
-                    data["Timestamp"] = datetime.datetime.now()
-                    data["Date"] = datetime.datetime.now().strftime("%d.%m.%Y")
-                    data["Time"] = datetime.datetime.now().strftime("%H:%M:%S")
-
-                    for key in data:
-                        client.publish('fimer/' + key, payload=str(data[key]).replace(',', '.'))
-                        print(f'{key:16}{data[key]}')
-                    client.publish('fimer/status', payload=f'Loop {x}, {len(data)} items sent from {host}, delay={control["delay"]}s')
-                    print(f'Loop {x} OK, {len(data)} items, delay={control["delay"]}s')
-                    abrufversuche = 0
-
-                break  # Exit the loop if the scraping is successful
-
-            except KeyboardInterrupt:
-                client.publish('fimer/status', payload=f'Abruf der fimer-Heizkreisdaten manuell abgebrochen')
-                sys.exit(0)
-
-            except PlaywrightTimeoutError:
-                print(f'Fehler: Timeout beim Abruf der Daten (Versuch {abrufversuche})')
-                client.publish('fimer/status', payload=f'Fehler: Timeout beim Abruf der Daten (Versuch {abrufversuche})')
-
-            except Exception as e:
-                print(f'Fehler beim Abruf der fimer-Heizkreisdaten (Versuch {abrufversuche}): {e}')
-                client.publish('fimer/status', payload=f'Fehler beim Abruf der fimer-Heizkreisdaten (Versuch {abrufversuche}): {e}')
-
-            finally:
+                loop_count += 1
                 try:
-                    await browser.close()
+                    data = await extract_data(page)
+                    publish_data(data, loop_count)
+                    consecutive_failures = 0
+                except PlaywrightTimeoutError as e:
+                    consecutive_failures += 1
+                    msg = (
+                        f"Timeout beim Abruf (Fehler {consecutive_failures}/{max_failures}): {e}"
+                    )
+                    print(msg, flush=True)
+                    client.publish("fimer/status", payload=msg)
                 except Exception as e:
-                    print(f'Fehler: Chromium konnte nicht beendet werden: {e}')
-                    client.publish('fimer/status', payload=f'Fehler: Chromium konnte nicht beendet werden: {e}')
+                    consecutive_failures += 1
+                    msg = (
+                        f"Fehler beim Abruf (Fehler {consecutive_failures}/{max_failures}): {e}"
+                    )
+                    print(msg, flush=True)
+                    client.publish("fimer/status", payload=msg)
 
-    print('Abruf fimer-Heizkreisdaten wurde beendet.')
-    client.publish('fimer/status', payload=f'Notify: Abruf fimer-Heizkreisdaten von {host} wurde beendet.')
+                if consecutive_failures >= max_failures:
+                    client.publish(
+                        "fimer/status",
+                        payload="Zu viele Fehler in Folge — Browser-Session wird neu gestartet.",
+                    )
+                    return "retry"
+        finally:
+            try:
+                await browser.close()
+            except Exception as e:
+                print(f"Fehler: Chromium konnte nicht beendet werden: {e}", flush=True)
+                client.publish(
+                    "fimer/status",
+                    payload=f"Fehler: Chromium konnte nicht beendet werden: {e}",
+                )
+
+    return "stop" if control["onoff"] == "stop" else "retry"
+
+
+async def main():
+    session = 0
+    while control["onoff"] != "stop":
+        if session > 0:
+            wait_min = float(control["waittime"])
+            # Short backoff for the first few reconnects, then use waittime.
+            if session == 1:
+                wait_min = min(wait_min, 0.2)
+            elif session < 4:
+                wait_min = min(wait_min, 3)
+            client.publish(
+                "fimer/status",
+                payload=f"Warte {wait_min} min vor Session-Neustart ({session})...",
+            )
+            await asyncio.sleep(wait_min * 60)
+
+        session += 1
+        try:
+            result = await scrape_session()
+        except KeyboardInterrupt:
+            client.publish("fimer/status", payload="Abruf manuell abgebrochen")
+            break
+        except Exception as e:
+            print(f"Session-Fehler: {e}", flush=True)
+            client.publish("fimer/status", payload=f"Session-Fehler: {e}")
+            continue
+
+        if result == "stop":
+            break
+        if result == "restart":
+            session = 0
+            continue
+        # result == "retry": keep looping with backoff
+
+    print("Abruf fimer-Heizkreisdaten wurde beendet.", flush=True)
+    client.publish(
+        "fimer/status",
+        payload=f"Notify: Abruf fimer-Heizkreisdaten von {host} wurde beendet.",
+    )
     client.loop_stop()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
