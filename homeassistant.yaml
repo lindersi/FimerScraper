@@ -1,0 +1,67 @@
+# Optional manual MQTT config (if you prefer YAML over discovery).
+# Prefer discovery from FimerScraper: homeassistant/device/fimer/config
+#
+# mqtt:
+#   sensor: !include path/to/this/file  — or paste under mqtt: sensor:
+
+- name: Status
+  unique_id: fimer_status
+  state_topic: fimer/status
+  entity_category: diagnostic
+  icon: mdi:solar-power
+  device:
+    identifiers: [fimer]
+    name: Fimer
+    manufacturer: Fimer
+    model: Inverter
+
+- name: Updated
+  unique_id: fimer_updated
+  state_topic: fimer/Time
+  entity_category: diagnostic
+  icon: mdi:clock-outline
+  device:
+    identifiers: [fimer]
+
+- name: MPPT1 Power
+  unique_id: fimer_p1
+  state_topic: fimer/P1
+  device_class: power
+  state_class: measurement
+  unit_of_measurement: kW
+  device:
+    identifiers: [fimer]
+
+- name: MPPT2 Power
+  unique_id: fimer_p2
+  state_topic: fimer/P2
+  device_class: power
+  state_class: measurement
+  unit_of_measurement: kW
+  device:
+    identifiers: [fimer]
+
+- name: MPPT3 Power
+  unique_id: fimer_p3
+  state_topic: fimer/P3
+  device_class: power
+  state_class: measurement
+  unit_of_measurement: kW
+  device:
+    identifiers: [fimer]
+
+- name: MPPT4 Power
+  unique_id: fimer_p4
+  state_topic: fimer/P4
+  device_class: power
+  state_class: measurement
+  unit_of_measurement: kW
+  device:
+    identifiers: [fimer]
+
+- name: Derating
+  unique_id: fimer_derating
+  state_topic: fimer/Derating
+  icon: mdi:tune-vertical
+  device:
+    identifiers: [fimer]

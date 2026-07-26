@@ -36,8 +36,21 @@ Stop with Ctrl+C, or publish `stop` to `fimer/control/onoff`.
 | `fimer/control/retries` | Consecutive scrape failures before re-login |
 | `fimer/control/onoff` | `stop` / `restart` |
 | `fimer/status` | Status messages |
+| `fimer/P1`…`P4` | MPPT power (kW) |
+| `fimer/Time` | Last update time |
+| `fimer/Derating` | Derating state |
 
 The service stays up on scrape errors: it logs/publishes status, retries, and only restarts the browser session after too many consecutive failures.
+
+## Home Assistant
+
+On MQTT connect, the scraper publishes **MQTT discovery** to `homeassistant/device/fimer/config` (retained). With MQTT discovery enabled in HA, a single device **Fimer** appears with:
+
+- Status, Updated (diagnostic)
+- MPPT1–4 Power (kW)
+- Derating
+
+No YAML needed if discovery is on. For manual config, see [`homeassistant.yaml`](homeassistant.yaml) — share the same `device.identifiers: [fimer]` so entities group under one device. Remove any old loose MQTT sensors with the same topics to avoid duplicates.
 
 ## systemd install
 
